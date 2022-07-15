@@ -1,0 +1,538 @@
+---
+title: "ProgettoDS"
+author: "Lorenzo Dal Fabbro"
+date: '2022-07-18'
+output:
+  ioslides_presentation:
+    css: main.css
+    incremental: yes
+editor_options: 
+  chunk_output_type: inline    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, message = FALSE, warning = FALSE)
+```
+
+## <b>Where does the data come from?</b> 
+<p>In this presentation I've focused on analyzing more the website, the reviews and the relative opinions of the tasters rather than analyzing the wines since the data that I've gathered is both not absolute (We don't have much data about who reviewed the wines) and the data is not complete (We can't compare two states in an absolute way: if we try to do that, it would be an analysis about what the tasters tried, which of course is not the totality of the wines that exist)</p>
+
+```{r, include=FALSE}
+library(chron)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(ggmap)
+library(maps)
+library(mapdata)
+library(scales)
+library(lubridate)
+require(gridExtra)
+library(tibble)
+library(stringr)
+library(rnaturalearth)
+library(mapIT)
+library(tidytext)
+
+
+library(plotly) #graphics
+library(fmsb) #for radar graphics
+library(wordcloud)#for wordcloud graphics
+library(treemap)#fro treempas graphics
+library(rworldmap)
+```
+
+```{r, echo = FALSE}
+rawDataset <- read.csv(file = "output.csv", na.strings=c("","NA"))
+
+dataset <- as_tibble(rawDataset)
+
+```
+
+
+## <b>Where does the data come from?</b> 
+<p>The data used for this presentation comes from a free open source database hosted on Kaggle, it was scraped from winemag.com during late 2017 using a python script which gathered all the informations available from the daily posted wine reviews.</p>
+
+```{r, echo = FALSE}
+#remove the rows with blank cells
+clean_dataset <- subset(dataset, complete.cases(dataset[ , c('country', 'description', "designation", "points", "price", "province", "taster_name", "title", "variety", "winery")]))
+
+#remove the duplicates...
+clean_dataset <- distinct(clean_dataset, country, description, designation, points, price, province, region_1, region_2, taster_name, variety, winery, .keep_all= TRUE) %>% 
+  filter(price < 2000)
+
+#View(clean_dataset)
+
+initial_rows <- nrow(dataset)
+valid_rows <- nrow(clean_dataset)
+
+```
+
+<ul>We are working with:
+</br>
+  <li>129.971 total rows of data.</li>
+  <li>64.049 rows of valid data.</li>
+</ul>
+```{r, echo = FALSE}
+df <- data.frame(group = c("valid_rows", "invalid_rows"), value = c(valid_rows, initial_rows - valid_rows))
+
+invalid_rows_percentage <- format(round((((initial_rows - valid_rows)/initial_rows)*100), 2), nsmall = 2)
+valid_rows_percentage <- format(round((100-((initial_rows - valid_rows)/initial_rows)*100), 2), nsmall = 2)
+
+df1 <- data.frame(group = c("percentages"), value = c(paste0(valid_rows_percentage,"%"),paste0(invalid_rows_percentage,"%")))
+
+ggplot(df, aes(x = "", y = value, fill = group)) +
+  geom_col() +
+  guides(fill = guide_legend(title = "Dataset Rows")) +
+  coord_polar("y", start=0) +
+  scale_fill_manual(values=c("#999999", "#E69F00")) +
+  labs(title = 'How many rows are actually used') +
+  theme(axis.text.x=element_blank()) +
+  geom_text(aes(label = df1$value), position = position_stack(vjust=0.5)) +
+  labs(x = NULL, y = NULL, fill = NULL)
+
+#Chi ha messo dei dati incompleti?
+
+```
+<p>About 50% of the rows must be discarded</p>
+```{r, echo = FALSE}
+broken_dataset <- subset(dataset, !complete.cases(dataset))
+
+df1 <- broken_dataset %>%
+  select(taster_name) %>%
+  group_by(taster_name) %>%
+  summarise(count = n())
+
+df1 <- df1 %>% 
+mutate(taster_name = replace_na(taster_name, "Unknown"))
+
+top_n(df1, n=5, count) %>% ggplot(data= . , aes(x=tail(reorder(taster_name, -count), 10), y=count)) +
+  ggtitle('Who are the "culprits" of missing data?') +
+  geom_bar(stat="identity", fill="steelblue") + 
+  geom_text(aes(label = count, y= count),  vjust = -0.3) +
+  labs(x = "Taster name", y = "count") +
+  theme_minimal()
+
+```
+<p>Who does publish the most? are they the same people as those who leave empty data?</p>
+```{r, echo = FALSE}
+taster_frequency <- clean_dataset %>%
+  group_by(taster_name) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+
+#Lets see who are all our tasters and who is contributing the most
+wordcloud(words =taster_frequency$taster_name, freq = taster_frequency$count, min.freq = 0, random.order=FALSE, rot.per=0.35,colors=brewer.pal(8, "Dark2"))
+
+
+```
+<p>In total we have 19 reviewers. Later we will see more clearly their influence on the dataset</p>
+
+## <b>Wines Worldwide</b>
+<p>How the density of wine production is distributed trough the world:</p>
+```{r echo=FALSE}
+country_frequency <- 
+  clean_dataset %>%
+  group_by(country) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+country_frequency$country <- recode(country_frequency$country
+                                  ,'US' = 'USA'
+                                  ,'United Kingdom' = 'UK'
+                                  )
+
+map.world <- map_data("world")
+
+map.world_joined <- left_join(map.world, country_frequency, by = c('region' = 'country'))
+
+map.world_joined <- map.world_joined %>% mutate(fill_flg = ifelse(is.na(count),F,T))
+
+#=======
+# MAP
+#=======
+#print(nrow(country_frequency))
+
+ggplot() +
+  geom_polygon(data = map.world_joined, aes(x = long, y = lat, group = group, fill = fill_flg)) +
+  scale_fill_manual(values = c("#CCCCCC","#e60000")) +
+  labs(title = 'Countries Analyzed'
+       ,subtitle = "") +
+  theme(text = element_text(family = "Gill Sans", color = "#FFFFFF")
+        ,panel.background = element_rect(fill = "#444444")
+        ,plot.background = element_rect(fill = "#444444")
+        ,panel.grid = element_blank()
+        ,plot.title = element_text(size = 30)
+        ,plot.subtitle = element_text(size = 10)
+        ,axis.text = element_blank()
+        ,axis.title = element_blank()
+        ,axis.ticks = element_blank()
+        ,legend.position = "none"
+        )
+
+
+```
+<p>In total we are analyzing 41 countries</p>
+</br>
+<p>How many reviews per country do we have?</p> 
+<p>Are there enough reviews to analyze our dataset??</p> 
+```{r, echo = FALSE}
+review_countries <- clean_dataset %>% select(country)
+
+reviews_by_country <- 
+  review_countries %>%
+  group_by(country) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+top_n(reviews_by_country, n=10, count) %>% ggplot(data= . , aes(x=tail(reorder(country, -count), 10), y=count)) +
+  ggtitle("Amount of reviews per country") +
+  geom_bar(stat="identity", fill="steelblue") + 
+  geom_text(aes(label = count, y= count),  vjust = -0.3) +
+  labs(y="Amount of reviews", x ="Country")
+
+
+```
+
+## <b>Wine global analysis</b> 
+<p>Until now we have seen data relative about the wines provenance; which means that in terms of wine analysis we still got nothing.</p>
+<p>In order to actually compare the wines, we can put price and points in a relation:</p> 
+```{r, echo = FALSE}
+#First we will see the opinion of the top 5 tasters: (do they intrinsically associate higher prices with higher quality?)
+quality_price_df <- 
+  clean_dataset %>%
+  select(winery, country, taster_name, price, points, title)
+
+quality_price_df<-subset(quality_price_df, price!="2013")
+
+#Replace the name of low-priced wines with a common one so I can color the top ones without coloring them all.
+quality_price_df['country'][quality_price_df['price'] < 600 & quality_price_df['points'] < 98] <- NA
+
+ggplot(data = quality_price_df, mapping = aes(x = points, y = price)) +
+geom_point() + 
+geom_smooth() +
+labs(x = "Points", y = "Price")
+
+
+```
+
+<p>What countries are at the top in matters of price/quality? are some countries more likely to be at top quality?</p>
+```{r, echo = FALSE}
+
+ggplot(data = quality_price_df, mapping = aes(x = points, y = price, colour = factor(country))) +
+scale_color_discrete(na.value = "black") +
+geom_point() + 
+labs(x = "Points", y = "Price")
+
+```
+
+<p>Lets view this graph once again to be able to see more details about each wine...</p>
+```{r include=FALSE, results='hide'}
+
+#Reset the na edits done previously to be able to analyze correctly again
+quality_price_df <- 
+  clean_dataset %>%
+  select(winery, country, taster_name, price, points, title)
+
+quality_price_df<-subset(quality_price_df, price!="2013")
+
+quality_price_df[!duplicated(quality_price_df[ , c("price","points")]),]
+
+```
+
+```{r, echo = FALSE}
+plot_ly(data = quality_price_df, x=~points, y=~price, type = "scatter", mode="markers", hoverinfo="text", text=paste(quality_price_df$title,"<br>", quality_price_df$price , "$," , quality_price_df$country))
+
+#Now this is the general 
+
+```
+## <b>What wineries are the most visited?</b> 
+<p>We saw the top reviews countries and the top  reviewed wines, are also the most visited winaries related to the "best" wines?</p> 
+<!-- Let's see which wineries were the most reviewed -->
+```{r, echo = FALSE}
+
+wines_by_winery <- 
+  clean_dataset %>%
+  group_by(winery, country) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+#print("How many wieries got reviewed: ")
+#print(nrow(wines_by_winery))
+
+top_10_df <-wines_by_winery %>% arrange(desc(count)) %>% head(., 10)
+
+ggplot(data= top_10_df , aes(x=tail(reorder(winery, -count), 10), y=count, fill = factor(country))) +
+  ggtitle("Top 10 most reviewed wineries") +
+  geom_bar(stat="identity", colour="steelblue") + 
+  geom_text(aes(label = count, y= count),  vjust = -0.3) +
+  labs(y="Amount of reviews", x ="winery") +
+  theme(axis.text.x = element_text(angle = 20, vjust = 0.9, hjust=0.6))
+
+```
+
+<p>Portugal, France and the US seem to still be the most favourite ones... Let's see all the winaries together to get an idea about how many and how different winaries we are dealing with.</p> 
+```{r, echo = FALSE}
+#Lets visualize the production of every winery and the mean value of them.
+mean <- mean(wines_by_winery$count)
+
+ggplot(data = wines_by_winery , mapping = aes(x = winery, y = count)) +
+  geom_point(aes(colour = factor(count))) +
+  geom_text(aes(label=ifelse(count>93,paste(winery,country),'')),hjust=0.5,vjust=-0.5) +
+  geom_hline(yintercept=mean, linetype="dashed", color = "red") +
+  geom_smooth() +
+  ylab("wines tasted") +
+  theme(legend.position="none", axis.text.x=element_blank())
+
+
+```
+<p>We have an average of 4 wines per winary, it is a positive sign to see that the tasters did not focus too much on winaries that they may like, they have rather explored different ones (which is very helpful for us, the more the data is spread the better)</p>
+## <b>Italian reviews distribution</b> 
+<p>Now we will analyze Italy, we saw that it comprehends about 6398 reviews which means almost 10% of all reviews</p>
+```{r, echo = FALSE}
+italy_df <- 
+  clean_dataset %>%
+  filter(country == "Italy")
+
+italy_rows <- nrow(italy_df)
+valid_rows <- nrow(clean_dataset)
+
+df <- data.frame(group = c("other rows", "italian rows"), value = c(valid_rows - italy_rows, italy_rows))
+
+other_rows_percentage <- format(round((((valid_rows - italy_rows)/valid_rows)*100), 2), nsmall = 2)
+italy_rows_percentage <- format(round((100-((valid_rows - italy_rows)/valid_rows)*100), 2), nsmall = 2)
+
+df1 <- data.frame(group = c("percentages"), value = c(paste0(other_rows_percentage,"%"), paste0(italy_rows_percentage,"%")))
+
+ggplot(df, aes(x = "", y = value, fill = group)) +
+  geom_col() +
+  guides(fill = guide_legend(title = "Dataset Rows")) +
+  coord_polar("y", start=0) +
+  scale_fill_manual(values=c("#E69F00","#999999")) +
+  labs(title = 'How many rows of our dataset are reaviews about Italy?') +
+  theme(axis.text.x=element_blank()) +
+  geom_text(aes(label = df1$value), position = position_stack(vjust=0.5)) +
+  labs(x = NULL, y = NULL, fill = NULL)
+
+#View(italy_df)
+```
+<p>It was not easy to get regional data out of this dataset... since we did not have many rows of italian data, I had to extapolate the regions name by creating a Java program that analyzed every cell of a review looking for a word that reconduced to its provenience.
+
+From which regions do the reviewed wines come from? Who reviewed them?</p>
+```{r, echo = FALSE}
+#Lets see how our data is distributed at regional level
+italy_df <- italy_df %>% drop_na(scraped_region)
+
+region_df <- italy_df %>% 
+  select(scraped_region) %>%
+  group_by(scraped_region) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+wine <- data.frame(
+    Region = region_df$scraped_region,
+    Wineries = region_df$count
+ )
+
+gp <- list(low="#fff0f0", high="red3", na_color = "#FFFFFF")
+mapIT(Wineries, Region, data=wine,
+      guide.label="Number of reviews", graphPar=gp)
+
+
+
+```
+
+<p>Let's see more precisely how many reviews have the top regions</p>
+```{r, echo = FALSE}
+region_df <- top_n(region_df, n=6, count)
+
+scatterpolar <- plot_ly(region_df,type = 'scatterpolar',r = ~count,theta = ~scraped_region,fill = 'toself',name="Reviews Per Region") 
+scatterpolar <- scatterpolar %>% layout(polar = list(radialaxis = list(visible = T,range = c(0,2000))),showlegend = FALSE,(title="Reviews Per Region"))
+scatterpolar
+
+```
+<p>It seems like our reviews were made by almost a single person...</p>
+
+```{r, echo = FALSE}
+taster_frequency1 <- clean_dataset %>%
+  filter(country == "Italy") %>%
+  group_by(taster_name) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+#It seems like Italy isn't doing quite as good as we expected, let's dig deeper...
+#Who made those reviews?
+ggplot(data= taster_frequency1 , aes(x=tail(reorder(taster_name, -count), 10), y=count)) +
+  ggtitle('Who wrote more reviews about italy?') +
+  geom_bar(stat="identity", fill="steelblue") + 
+  geom_text(aes(label = count, y= count),  vjust = -0.3) +
+  labs(x = "Taster name", y = "count") +
+  theme_minimal()
+
+```
+
+<p>How can we get a more general idea about our raking? can we compare Kafee's judgment standards and severity with other reviewers in order to get a more accurate idea?</p>
+
+## <b>Italian reviews distribution</b> 
+<p>Let's see how generous the tasters are when doing reviews in a price/points matter on a global level. We will compare their average points and price, the bigger their circle is, the more generous they are when assignin points compared to the others. </p>
+```{r, echo = FALSE}
+
+#Grafico per analisi "generosità di punti veso l'italia"
+#x = punteggio medio mondiale no italia
+#y = munateggio medio italia
+#size = indice qualità/prezzo
+
+reviews_by_taster_global <- clean_dataset %>%
+  group_by(taster_name) %>%
+  summarise(total_reviews_global = n()) %>%
+  arrange(desc(total_reviews_global))
+
+reviews_by_taster_italy <-
+  clean_dataset %>%
+  filter(country == "Italy") %>%
+  group_by(taster_name) %>%
+  summarise(total_reviews_italy = n()) %>%
+  arrange(desc(total_reviews_italy))
+
+global_tasters_df <- clean_dataset %>%
+  group_by(taster_name) %>%
+  summarise(points = mean(points),
+            price = mean(price))
+
+italy_tasters_df <- clean_dataset %>%
+  filter(country == "Italy") %>%
+  group_by(taster_name) %>%
+  summarise(points = mean(points),
+            price = mean(price))
+
+names(global_tasters_df)[names(global_tasters_df) == 'points'] <- 'global_mean_points'
+names(global_tasters_df)[names(global_tasters_df) == 'price'] <- 'global_mean_price'
+names(italy_tasters_df)[names(italy_tasters_df) == 'points'] <- 'italy_mean_points'
+names(italy_tasters_df)[names(italy_tasters_df) == 'price'] <- 'italy_mean_price'
+
+
+tasters_df <- global_tasters_df %>%
+  full_join(reviews_by_taster_global,by="taster_name") %>%
+  left_join(reviews_by_taster_italy,by="taster_name") %>%
+  left_join(italy_tasters_df,by="taster_name")
+
+#Lets see who are all our tasters and who is contributing the most in italy
+fig <- plot_ly(tasters_df, x = ~global_mean_points, y = ~global_mean_price, 
+               text = ~paste(taster_name,"<br>", "Q/P", format(global_mean_points/global_mean_price, nsmall = 1)),
+               type = 'scatter', mode = 'markers', color = ~taster_name,
+               marker = list(size = ~(global_mean_points/global_mean_price)*20, opacity = 0.5))
+fig <- fig %>% layout(title = 'How generous are the reviewers with their ratings',
+         xaxis = list(showgrid = FALSE),
+         yaxis = list(showgrid = FALSE))
+
+fig
+
+
+```
+<p>We can see that Keefe seems to be the second most severe taster. On the other hand, Roger Voss seems to be "central" in every aspect...</p>
+<p>Now, it's possible to evaluate their relative generosity by also understanding their feelings when writing down a review, let's use afinn to determine the appreciation they gave trough the descriptions.</p>
+```{r, echo = FALSE}
+
+description_df <- clean_dataset %>%
+  select(country, description, scraped_region, taster_name) %>%
+  mutate(id = row_number())
+
+desc_sentiment <- description_df %>%
+  unnest_tokens(word, description, token = "tweets") %>%
+  inner_join(get_sentiments("afinn"))
+
+result <- description_df %>%
+  left_join(desc_sentiment %>%
+              group_by(id) %>%
+              summarise(score = sum(value))) %>%
+  replace_na(list(value = 0))
+
+#View(result)
+
+#First we look how generous are the single tasters
+grouped_result_taster <- result %>%
+  select(taster_name, score) %>%
+  filter(ifelse(is.na(score),F,T)) %>%
+  group_by(taster_name) %>%
+  summarise(taster_score = mean(score))
+#Then we find how did the single countries score
+grouped_result_country <- result %>%
+  select(country, score) %>%
+  filter(ifelse(is.na(score),F,T)) %>%
+  group_by(country) %>%
+  summarise(country_score = mean(score)) %>%
+  arrange(desc(country_score))
+#Lastly we analyze Italy wise 
+
+result_tasters <- left_join(tasters_df, grouped_result_taster, by = 'taster_name')
+
+#View(result_tasters)
+
+fig <- plot_ly(result_tasters, x = ~global_mean_points, y = ~global_mean_price, 
+               text = ~paste(taster_name,"<br>","Q/P", format((global_mean_points/global_mean_price), nsmall = 1), "<br>","Afinn", taster_score),
+               type = 'scatter', mode = 'markers', color = ~taster_name,
+               marker = list(size = ~(taster_score)*12, opacity = 0.5))
+fig <- fig %>% layout(title = 'How generous are the reviewers with their descriptions',
+         xaxis = list(showgrid = FALSE),
+         yaxis = list(showgrid = FALSE))
+
+fig
+```
+<p>Also here, Keefe seems to not be giving away too much positive reviews, confirming that he is quite fussy</p>
+
+## <b>The "best" italian wines</b> 
+<p>Now, knowing that we must ponderate the taster judgmnt by the lack of other opinions and its own severity, let's see what Italian wines get the most recognition on wineentusiasts.com</p>
+```{r, echo = FALSE}
+
+#lets see how generous they are with italy compared to the rest of the world
+
+ggplot(clean_dataset, aes(points, price, colour = (country == "Italy"))) +
+  labs(title="Comparing italy Q/P with the other countries") +
+  geom_point() +
+  geom_smooth()
+
+```
+
+<p>It seems like Italian wines are quite similar to the global ones in a matter of quality/price, but if we consider what we saw before, is it still the same? Let's see what Italian wines get the most recognition on wineentusiasts.com on a regional level</p>
+```{r, echo = FALSE}
+
+region_mean_points <- italy_df %>% 
+  group_by(scraped_region) %>%
+  summarise(points = mean(points))
+
+region_mean_prices <- italy_df %>% 
+  group_by(scraped_region) %>%
+  summarise(price = mean(price))
+
+wines_region <- data.frame(
+    Region = region_mean_points$scraped_region,
+    Points = region_mean_points$points,
+    Prices =  region_mean_prices$price
+ )
+
+gp <- list(low="#fff0f0", high="blue3", na_color = "#FFFFFF")
+mapIT(Points, Region, data=wines_region,
+      guide.label="Number of reviews", graphPar=gp)
+
+gp <- list(low="#fff0f0", high="red3", na_color = "#FFFFFF")
+mapIT(Prices, Region, data=wines_region,
+      guide.label="Number of reviews", graphPar=gp)
+
+```
+
+<p>To conclude, let's finally see what are the "best" Italian wines declared by Keefe</p>
+```{r, echo = FALSE}
+italy_df <- clean_dataset %>%
+  filter(country == "Italy")
+
+top_italian_wines <- top_n(italy_df, n=10, points) %>%
+    arrange(desc(price))
+
+
+ssaw <- plot_ly(italy_df, x = ~points, y = ~price, color=~scraped_region,colors = "Set1",type = 'scatter')
+ssaw<-ssaw %>% layout(title="Top Italian Wines",xaxis=list(title="points"),yaxis=list(title="price"))
+ssaw
+```
+
+<p>This last graph is just to demonstrate that analysis like "What is the best wine" and such, can't be answered with this particular dataset (specially italy lated questions), we can rather describe the criteria of choice of the reviewers and extrapolate an estimation about how countries do perform comparing each other.</p>
